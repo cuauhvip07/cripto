@@ -1,10 +1,12 @@
 import dotenv from 'dotenv';
 import express from 'express';
-import { Pool } from 'pg';  // Usamos pg Pool para manejar las conexiones
 import bcrypt from 'bcryptjs';
 import nodemailer from 'nodemailer';
 import cors from 'cors'; // Para habilitar CORS
 import crypto from 'crypto'; // Para generar un token aleatorio
+import pg from 'pg';
+const { Pool } = pg;
+
 
 dotenv.config();
 
