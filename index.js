@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import express from 'express';
-import mysql from 'mysql2';
+import { Pool } from 'pg';  // Usamos pg Pool para manejar las conexiones
 import bcrypt from 'bcryptjs';
 import nodemailer from 'nodemailer';
 import cors from 'cors'; // Para habilitar CORS
@@ -12,12 +12,13 @@ const app = express();
 app.use(express.json());
 app.use(cors());  // Permite el acceso desde tu frontend
 
-// Conexión a la base de datos
-const db = mysql.createConnection({
-  host: process.env.DB_HOST,
+// Conexión a la base de datos (PostgreSQL)
+const pool = new Pool({
   user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
+  host: process.env.DB_HOST,
   database: process.env.DB_NAME,
+  password: process.env.DB_PASSWORD,
+  port: 5432, // El puerto por defecto de PostgreSQL
 });
 
 // Crear el transporter para nodemailer
@@ -57,34 +58,29 @@ app.post('/api/register', async (req, res) => {
     const token = generateRandomToken();
 
     // Insertar el usuario y el token en la base de datos
-    const query = 'INSERT INTO usuarios (nombre, correo, password, token) VALUES (?, ?, ?, ?)';
+    const query = 'INSERT INTO usuarios (nombre, correo, password, token) VALUES ($1, $2, $3, $4)';
     const values = [name, email, hashedPassword, token];
 
-    db.query(query, values, (err, result) => {
+    const result = await pool.query(query, values);
+
+    // Responder al cliente antes de enviar el correo
+    res.status(200).send({ success: true });
+
+    // Enviar el correo con el token
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: 'Verificación de correo',
+      text: `Tu token de verificación es: ${token}`,
+    };
+
+    // Enviar el correo de verificación
+    transporter.sendMail(mailOptions, (err, info) => {
       if (err) {
-        console.log('Error al insertar en la base de datos:', err);
-        return res.status(500).send('Error interno');
+        console.error('Error al enviar correo:', err);
+      } else {
+        console.log('Correo enviado:', info.response);
       }
-
-      // Responder al cliente antes de enviar el correo
-      res.status(200).send({ success: true });
-
-      // Enviar el correo con el token
-      const mailOptions = {
-        from: process.env.EMAIL_USER,
-        to: email,
-        subject: 'Verificación de correo',
-        text: `Tu token de verificación es: ${token}`,
-      };
-
-      // Enviar el correo de verificación
-      transporter.sendMail(mailOptions, (err, info) => {
-        if (err) {
-          console.error('Error al enviar correo:', err);
-        } else {
-          console.log('Correo enviado:', info.response);
-        }
-      });
     });
   } catch (error) {
     console.log('Error al registrar el usuario:', error);
@@ -93,37 +89,34 @@ app.post('/api/register', async (req, res) => {
 });
 
 // Ruta para verificar el token
-app.post('/api/verify-token', (req, res) => {
+app.post('/api/verify-token', async (req, res) => {
   const { email, token } = req.body; // También necesitamos el email del usuario
 
-  // Buscar el token en la base de datos
-  const query = 'SELECT * FROM usuarios WHERE correo = ?';
-  db.query(query, [email], (err, results) => {
-    if (err) {
-      return res.status(500).send('Error interno');
-    }
+  try {
+    // Buscar el token en la base de datos
+    const query = 'SELECT * FROM usuarios WHERE correo = $1';
+    const result = await pool.query(query, [email]);
 
-    if (results.length === 0) {
+    if (result.rows.length === 0) {
       return res.status(404).send({ success: false, message: 'Usuario no encontrado' });
     }
 
-    const user = results[0];
+    const user = result.rows[0];
 
     // Verificar si el token es válido
     if (user.token === token) {
       // Marcar al usuario como verificado
-      const updateQuery = 'UPDATE usuarios SET verificado = TRUE WHERE correo = ?';
-      db.query(updateQuery, [email], (err, result) => {
-        if (err) {
-          return res.status(500).send('Error al actualizar la base de datos');
-        }
+      const updateQuery = 'UPDATE usuarios SET verificado = TRUE WHERE correo = $1';
+      await pool.query(updateQuery, [email]);
 
-        res.status(200).send({ success: true, message: 'Token verificado correctamente' });
-      });
+      res.status(200).send({ success: true, message: 'Token verificado correctamente' });
     } else {
       res.status(400).send({ success: false, message: 'Token inválido' });
     }
-  });
+  } catch (error) {
+    console.log('Error al verificar el token:', error);
+    res.status(500).send('Error interno');
+  }
 });
 
 // Iniciar servidor
