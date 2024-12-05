@@ -3,10 +3,13 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import nodemailer from 'nodemailer';
 import cors from 'cors'; // Para habilitar CORS
-import crypto from 'crypto'; // Para generar un token aleatorio
-import pg from 'pg';
-const { Pool } = pg;
-
+import crypto from 'crypto'; // Para generar las llaves RSA
+import pkg from 'pg';  // Usamos la importación por defecto
+const { Pool } = pkg;  // Extraemos el Pool de `pkg`
+import fs from 'fs';
+import path from 'path';
+import { type } from 'os';
+import { format } from 'path';
 
 dotenv.config();
 
@@ -39,7 +42,24 @@ const generateRandomToken = () => {
   return crypto.randomInt(10000, 99999).toString();  // Genera un número aleatorio de 5 dígitos
 };
 
-// Ruta para registrar usuario
+// Función para generar el par de llaves RSA (pública y privada)
+const generarLlaves = () => {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: {
+      type: 'spki',
+      format: 'pem',
+    },
+    privateKeyEncoding: {
+      type: 'pkcs8',
+      format: 'pem',
+    },
+  });
+
+  return { publicKey, privateKey };
+};
+
+// Ruta para registrar un usuario
 app.post('/api/register', async (req, res) => {
   const { name, email, password, confirmPassword } = req.body;
 
@@ -59,14 +79,17 @@ app.post('/api/register', async (req, res) => {
     // Generar el token aleatorio de 5 dígitos
     const token = generateRandomToken();
 
-    // Insertar el usuario y el token en la base de datos
-    const query = 'INSERT INTO usuarios (nombre, correo, password, token) VALUES ($1, $2, $3, $4)';
-    const values = [name, email, hashedPassword, token];
+    // Generar las llaves RSA
+    const { publicKey, privateKey } = generarLlaves();
 
-    const result = await pool.query(query, values);
+    // Insertar el usuario con las llaves y el token en la base de datos
+    const query = 'INSERT INTO usuarios (nombre, correo, password, token, public_key, private_key) VALUES ($1, $2, $3, $4, $5, $6)';
+    const values = [name, email, hashedPassword, token, publicKey, privateKey];
 
-    // Responder al cliente antes de enviar el correo
-    res.status(200).send({ success: true });
+    await pool.query(query, values);
+
+    // Si todo es correcto, responder con éxito
+    res.status(200).send({ success: true, message: 'Usuario registrado correctamente' });
 
     // Enviar el correo con el token
     const mailOptions = {
@@ -85,14 +108,14 @@ app.post('/api/register', async (req, res) => {
       }
     });
   } catch (error) {
-    console.log('Error al registrar el usuario:', error);
-    res.status(500).send('Error interno');
+    console.error('Error al registrar el usuario:', error);
+    res.status(500).send({ message: 'Error interno al registrar el usuario', error: error.message });
   }
 });
 
 // Ruta para verificar el token
 app.post('/api/verify-token', async (req, res) => {
-  const { email, token } = req.body; // También necesitamos el email del usuario
+  const { email, token } = req.body;
 
   try {
     // Buscar el token en la base de datos
@@ -116,9 +139,35 @@ app.post('/api/verify-token', async (req, res) => {
       res.status(400).send({ success: false, message: 'Token inválido' });
     }
   } catch (error) {
-    console.log('Error al verificar el token:', error);
+    console.error('Error al verificar el token:', error);
     res.status(500).send('Error interno');
   }
+});
+
+// Ruta para obtener la llave pública del usuario
+app.get('/api/get-public-key', async (req, res) => {
+  const { email } = req.query;
+
+  try {
+    // Buscar el usuario en la base de datos
+    const query = 'SELECT public_key FROM usuarios WHERE correo = $1';
+    const result = await pool.query(query, [email]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).send({ success: false, message: 'Usuario no encontrado' });
+    }
+
+    // Devolver la llave pública del usuario
+    res.status(200).send({ publicKey: result.rows[0].public_key });
+  } catch (error) {
+    console.error('Error al obtener la llave pública:', error);
+    res.status(500).send('Error interno');
+  }
+});
+
+// Ruta de prueba para asegurar que el servidor está funcionando
+app.get('/api/ping', (req, res) => {
+  res.status(200).send({ message: 'Servidor está funcionando' });
 });
 
 // Iniciar servidor
