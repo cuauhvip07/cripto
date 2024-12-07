@@ -1,15 +1,15 @@
+
+
 import dotenv from 'dotenv';
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import nodemailer from 'nodemailer';
-import cors from 'cors'; // Para habilitar CORS
-import crypto from 'crypto'; // Para generar las llaves RSA
-import pkg from 'pg';  // Usamos la importación por defecto
+import cors from 'cors';
+import crypto from 'crypto';
+import pkg from 'pg';
+import jwt from 'jsonwebtoken';  // Usamos JWT para la autenticación
+
 const { Pool } = pkg;  // Extraemos el Pool de `pkg`
-import fs from 'fs';
-import path from 'path';
-import { type } from 'os';
-import { format } from 'path';
 
 dotenv.config();
 
@@ -59,17 +59,36 @@ const generarLlaves = () => {
   return { publicKey, privateKey };
 };
 
+// Middleware para verificar el token JWT
+const authenticateToken = (req, res, next) => {
+  const token = req.headers['authorization'];
+
+  if (!token) {
+    return res.status(403).json({ message: 'No token provided' });
+  }
+
+  const tokenWithoutBearer = token.split(' ')[1];
+
+  jwt.verify(tokenWithoutBearer, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ message: 'Token no válido' });
+    }
+    req.user = user;  // Guarda la información del usuario (como su correo) en la solicitud
+    next();
+  });
+};
+
 // Ruta para registrar un usuario
 app.post('/api/register', async (req, res) => {
   const { name, email, password, confirmPassword } = req.body;
 
   // Validaciones
   if (!name || !email || !password || !confirmPassword) {
-    return res.status(400).send({ message: 'Todos los campos son requeridos' });
+    return res.status(400).json({ message: 'Todos los campos son requeridos' });
   }
 
   if (password !== confirmPassword) {
-    return res.status(400).send({ message: 'Las contraseñas no coinciden' });
+    return res.status(400).json({ message: 'Las contraseñas no coinciden' });
   }
 
   try {
@@ -88,8 +107,8 @@ app.post('/api/register', async (req, res) => {
 
     await pool.query(query, values);
 
-    // Si todo es correcto, responder con éxito
-    res.status(200).send({ success: true, message: 'Usuario registrado correctamente' });
+    // Respuesta con éxito
+    res.status(200).json({ success: true, message: 'Usuario registrado correctamente' });
 
     // Enviar el correo con el token
     const mailOptions = {
@@ -99,7 +118,6 @@ app.post('/api/register', async (req, res) => {
       text: `Tu token de verificación es: ${token}`,
     };
 
-    // Enviar el correo de verificación
     transporter.sendMail(mailOptions, (err, info) => {
       if (err) {
         console.error('Error al enviar correo:', err);
@@ -109,68 +127,65 @@ app.post('/api/register', async (req, res) => {
     });
   } catch (error) {
     console.error('Error al registrar el usuario:', error);
-    res.status(500).send({ message: 'Error interno al registrar el usuario', error: error.message });
+    res.status(500).json({ message: 'Error interno al registrar el usuario' });
   }
 });
 
-// Ruta para verificar el token
+// Ruta para verificar el token de 5 dígitos
 app.post('/api/verify-token', async (req, res) => {
   const { email, token } = req.body;
 
+  if (!email || !token) {
+    return res.status(400).json({ message: 'Email y token son requeridos' });
+  }
+
   try {
-    // Buscar el token en la base de datos
-    const query = 'SELECT * FROM usuarios WHERE correo = $1';
+    const query = 'SELECT token FROM usuarios WHERE correo = $1';
     const result = await pool.query(query, [email]);
 
     if (result.rows.length === 0) {
-      return res.status(404).send({ success: false, message: 'Usuario no encontrado' });
+      return res.status(404).json({ message: 'Usuario no encontrado' });
     }
 
-    const user = result.rows[0];
+    const storedToken = result.rows[0].token;
 
-    // Verificar si el token es válido
-    if (user.token === token) {
-      // Marcar al usuario como verificado
-      const updateQuery = 'UPDATE usuarios SET verificado = TRUE WHERE correo = $1';
-      await pool.query(updateQuery, [email]);
-
-      res.status(200).send({ success: true, message: 'Token verificado correctamente' });
+    if (storedToken === token) {
+      const jwtToken = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: '1h' });
+      return res.status(200).json({ success: true, message: 'Token válido', token: jwtToken });
     } else {
-      res.status(400).send({ success: false, message: 'Token inválido' });
+      return res.status(400).json({ message: 'Token inválido' });
     }
   } catch (error) {
     console.error('Error al verificar el token:', error);
-    res.status(500).send('Error interno');
+    res.status(500).json({ message: 'Error interno' });
   }
 });
 
-// Ruta para obtener la llave pública del usuario
-app.get('/api/get-public-key', async (req, res) => {
-  const { email } = req.query;
+// Ruta para obtener la llave pública
+app.get('/api/get-public-key', authenticateToken, async (req, res) => {
+  const email = req.user.email;
 
   try {
-    // Buscar el usuario en la base de datos
     const query = 'SELECT public_key FROM usuarios WHERE correo = $1';
     const result = await pool.query(query, [email]);
 
     if (result.rows.length === 0) {
-      return res.status(404).send({ success: false, message: 'Usuario no encontrado' });
+      return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
     }
 
-    // Devolver la llave pública del usuario
-    res.status(200).send({ publicKey: result.rows[0].public_key });
+    const publicKey = result.rows[0].public_key;
+    res.json({ success: true, publicKey });  // Asegúrate de que esto esté en formato JSON
   } catch (error) {
     console.error('Error al obtener la llave pública:', error);
-    res.status(500).send('Error interno');
+    res.status(500).json({ success: false, message: 'Error interno' });  // También devolver un JSON
   }
 });
 
-// Ruta de prueba para asegurar que el servidor está funcionando
-app.get('/api/ping', (req, res) => {
-  res.status(200).send({ message: 'Servidor está funcionando' });
+
+
+// Iniciar el servidor
+const port = process.env.PORT || 4000;
+app.listen(port, () => {
+  console.log(`Servidor corriendo en el puerto ${port}`);
 });
 
-// Iniciar servidor
-app.listen(4000, () => {
-  console.log('Servidor corriendo en http://localhost:4000');
-});
