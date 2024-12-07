@@ -131,6 +131,47 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
+// Ruta para login
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ message: 'Correo electrónico y contraseña son requeridos' });
+  }
+
+  try {
+    // Buscar el usuario en la base de datos
+    const query = 'SELECT * FROM usuarios WHERE correo = $1';
+    const result = await pool.query(query, [email]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Usuario no encontrado' });
+    }
+
+    const user = result.rows[0];
+
+    // Verificar la contraseña
+    const isMatch = await bcrypt.compare(password, user.password);
+
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Contraseña incorrecta' });
+    }
+
+    // Generar un token JWT si las credenciales son correctas
+    const jwtToken = jwt.sign({ email: user.correo }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+    // Enviar el token al frontend
+    res.status(200).json({ success: true, token: jwtToken });
+
+  } catch (error) {
+    console.error('Error en el login:', error);
+    res.status(500).json({ message: 'Error interno en el servidor' });
+  }
+});
+
+
+
+
 // Ruta para verificar el token de 5 dígitos
 app.post('/api/verify-token', async (req, res) => {
   const { email, token } = req.body;
